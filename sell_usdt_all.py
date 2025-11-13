@@ -10,9 +10,12 @@ from urllib.parse import urlencode
 API_KEY = ""
 API_SECRET = ""
 BASE_URL = "https://api.bithumb.com"
+# v2.1.5
+# https://apidocs.bithumb.com/v2.1.5/reference/%EC%A3%BC%EB%AC%B8%ED%95%98%EA%B8%B0
+
 
 def create_jwt_token(request_body=None):
-    """JWT 토큰 생성"""
+    """빗썸 API v2.1.5 JWT 토큰 생성"""
     payload = {
         "access_key": API_KEY,
         "nonce": str(uuid.uuid4()),
@@ -73,6 +76,8 @@ def get_account_balance():
     except Exception as e:
         print(f"잔고 조회 오류: {e}")
         return None
+
+
 
 def sell_usdt(volume, price):
     """USDT 지정가 매도"""
@@ -155,77 +160,33 @@ def main():
     
     # USDT 계좌 찾기
     usdt_balance = 0
-    usdt_locked = 0
-    
     for account in accounts:
         if account.get('currency') == 'USDT':
             usdt_balance = float(account.get('balance', 0))
-            usdt_locked = float(account.get('locked', 0))
             break
-    
-    print(f"   ✅ USDT 보유량:")
-    print(f"      - 사용 가능: {usdt_balance:.6f} USDT")
-    print(f"      - 주문 중: {usdt_locked:.6f} USDT")
-    print(f"      - 총 보유: {usdt_balance + usdt_locked:.6f} USDT")
     
     if usdt_balance <= 0:
         print("❌ 매도할 USDT가 없습니다.")
         return
     
-    # 3. 매도 계획
+    print(f"   ✅ 보유 USDT: {usdt_balance:.8f} USDT")
+    
+    # 3. 시장가 전체 매도 계획
     total_usdt = usdt_balance
-    estimated_krw = total_usdt * price_info['sell']
     
-    print(f"\n3. 매도 계획:")
-    print(f"   - 매도할 수량: {total_usdt:.6f} USDT")
-    print(f"   - 예상 매도가: {price_info['sell']:,} KRW")
-    print(f"   - 예상 수익: {estimated_krw:,.0f} KRW")
-    print(f"   - 예상 수수료: {estimated_krw * 0.0025:,.0f} KRW")
-    print(f"   - 실수령 예상: {estimated_krw * 0.9975:,.0f} KRW")
+    print(f"\n3. 시장가 전체 매도 계획:")
+    print(f"   - 매도할 수량: {total_usdt:.8f} USDT (보유 전체)")
+    print(f"   - 매도 방식: 시장가 (즉시 체결)")
+    print(f"   - 예상 수익: 현재 시세에 따라 결정")
     
-    # 4. 매도 방식 선택
-    print(f"\n4. 매도 방식을 선택하세요:")
-    print(f"   [1] 지정가 매도 (현재 매도 호가로 주문)")
-    print(f"   [2] 시장가 매도 (즉시 체결, 약간 불리한 가격)")
-    print(f"   [3] 취소")
+    print("   자동으로 시장가 매도를 진행합니다...")
     
-    choice = input("   선택하세요 (1/2/3): ").strip()
+    # 4. 실제 시장가 전체 매도 실행
+    print(f"\n4. 시장가 전체 매도 주문 실행 중...")
+    result = sell_usdt_market(total_usdt)
     
-    if choice == "1":
-        # 지정가 매도
-        sell_price = price_info['sell']
-        print(f"\n   💰 {total_usdt:.6f} USDT를 {sell_price:,} KRW에 지정가 매도")
-        
-        confirm = input("   진행하시겠습니까? (y/N): ").strip().lower()
-        if confirm != 'y':
-            print("   매도를 취소했습니다.")
-            return
-        
-        print(f"\n5. 지정가 매도 주문 실행 중...")
-        result = sell_usdt(total_usdt, sell_price)
-        
-    elif choice == "2":
-        # 시장가 매도
-        print(f"\n   💰 {total_usdt:.6f} USDT를 시장가 매도 (즉시 체결)")
-        
-        confirm = input("   진행하시겠습니까? (y/N): ").strip().lower()
-        if confirm != 'y':
-            print("   매도를 취소했습니다.")
-            return
-        
-        print(f"\n5. 시장가 매도 주문 실행 중...")
-        result = sell_usdt_market(total_usdt)
-        
-    elif choice == "3":
-        print("   매도를 취소했습니다.")
-        return
-    else:
-        print("   잘못된 선택입니다.")
-        return
-    
-    # 6. 결과 확인
     if result:
-        print(f"✅ 매도 주문 성공!")
+        print(f"✅ 시장가 매도 주문 성공!")
         print(f"📋 주문 정보:")
         print(json.dumps(result, indent=2, ensure_ascii=False))
         
@@ -233,25 +194,15 @@ def main():
         print(f"   - 주문 UUID: {result.get('uuid', 'N/A')}")
         print(f"   - 주문 상태: {result.get('state', 'N/A')}")
         print(f"   - 매도 수량: {result.get('volume', 'N/A')} USDT")
-        
-        if choice == "1":
-            print(f"   - 매도 가격: {result.get('price', 'N/A')} KRW")
-            print(f"   - 주문 타입: 지정가 매도")
-        else:
-            print(f"   - 주문 타입: 시장가 매도")
-            
+        print(f"   - 매도 가격: {result.get('price', 'N/A')} KRW")
         print(f"   - 생성 시간: {result.get('created_at', 'N/A')}")
         
-        print(f"\n🎉 축하합니다! USDT 매도 주문이 완료되었습니다!")
-        print(f"📈 빗썸에서 주문 상태를 확인하세요.")
-        
-        if choice == "1":
-            print(f"💡 지정가 주문이므로 매수자가 나타날 때까지 대기합니다.")
-        else:
-            print(f"💡 시장가 주문이므로 즉시 체결되었을 가능성이 높습니다.")
+        print(f"\n🎉 축하합니다! USDT 시장가 매도 주문이 완료되었습니다!")
+        print(f"📈 시장가 주문이므로 즉시 체결되었을 가능성이 높습니다.")
+        print(f"📊 빗썸에서 체결 결과를 확인하세요.")
         
     else:
-        print(f"❌ 매도 주문 실패")
+        print(f"❌ 시장가 매도 주문 실패")
 
 if __name__ == "__main__":
     main()

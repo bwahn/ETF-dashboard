@@ -1,142 +1,175 @@
-# ETF 대시보드 Google 시트 가이드
+# ETF 배당 대시보드 (FastAPI + React)
 
 ## 개요
 
-ETF 배당 흐름을 추적하고 한눈에 지표를 볼 수 있는 Google 시트를 만드는 방법을 정리했습니다. 전체 문서는 `Dashboard` 시트 1개와 티커별 시트 4개(`HOOY`, `NVDY`, `PLTY`, `WPAY`)로 구성되며, `GOOGLEFINANCE` 함수를 활용해 가격과 배당 정보를 자동으로 갱신합니다.
+- **백엔드**: FastAPI + SQLModel, FMP / Yahoo Finance 연동, 배당 집계 및 이메일 알림
+- **프런트엔드**: Vite 기반 React, React Query, Recharts, Zustand 상태 관리
+- **핵심 기능**
+  - 티커별 KPI(현재가, 일일 변동률, 배당수익률, 총보수)
+  - 월별 배당 추이 그래프, 최근 배당 요약, 배당 테이블
+  - 가격·배당수익률 임계값 기반 이메일 알림 생성/관리/테스트
+  - FMP 무료 플랜(일 250회) 기준 API 사용량 카드 표시
+  - 티커/기간/수익률 필터, 경고 및 오류 메시지 표시
 
----
-
-## 1. 시트 구성
-
-- 첫 화면용 `Dashboard` 시트를 만듭니다.
-- ETF마다 개별 시트(`HOOY`, `NVDY`, `PLTY`, `WPAY`)를 추가합니다.
-- `Dashboard`의 예: `A2:A5`에 티커 목록을 적고, 이 범위를 `Tickers`라는 이름 범위로 지정합니다.
-
----
-
-## 2. 티커별 시트(배당 히스토리)
-
-아래 설정을 각 ETF 시트에 반복합니다.
-
-1. 1행에 헤더를 추가합니다: `Date`, `Dividend`, `Notes`, `Year`, `Month`, `Month Key`, `Running Total`.
-2. `A2` 셀에 다음 배열 수식을 입력합니다.
-
-```text
-=ARRAYFORMULA(
-  LET(
-    raw, GOOGLEFINANCE("HOOY","dividend", DATE(2018,1,1), TODAY()),
-    cleaned, IF(ROW(raw)=1, {"Date","Dividend"}, raw),
-    FILTER(cleaned, INDEX(cleaned,,2) <> "")
-  )
-)
+```
+ETF-dashboard/
+├── backend/     # FastAPI 서버 (알림 스케줄러·데이터 서비스 포함)
+├── frontend/    # React 대시보드 UI
+└── ETF-dashboard-template.xlsx  # Google Sheet 템플릿(참고용)
 ```
 
-`"HOOY"` 부분을 해당 시트의 티커로 바꿔 입력하고, 더 긴 이력을 원하면 시작 날짜를 조정하세요.
+---
 
-3. 보조 열을 채우는 수식은 아래와 같습니다.
+## 준비물
 
-- `Year`(D열): `=ARRAYFORMULA(IF(A2:A="",,YEAR(A2:A)))`
-- `Month`(E열): `=ARRAYFORMULA(IF(A2:A="",,TEXT(A2:A,"mmm")))`
-- `Month Key`(F열): `=ARRAYFORMULA(IF(A2:A="",,TEXT(A2:A,"yyyy-mm")))`
-- `Running Total`(G열): `=ARRAYFORMULA(IF(B2:B="",,MMULT(--(ROW(B2:B)>=TRANSPOSE(ROW(B2:B))),B2:B)))`
-
-4. 최신 배당을 강조하려면 조건부 서식을 지정합니다.
-
-- 범위: `A2:B`
-- 사용자 지정 수식: `=A2=MAX($A:$A)` → 연한 배경색 등으로 강조
+- macOS / Linux / WSL
+- Conda 환경 `crawling` (Python 3.12 포함)
+- Node.js 20 이상
+- Financial Modeling Prep(FMP) API 키
+- (선택) Yahoo Finance crumb & cookie, SMTP 자격 증명
 
 ---
 
-## 3. 대시보드 콘텐츠
+## 환경 변수 설정
 
-### 3.1 티커 선택기
-
-- 예: `B1` 셀을 선택한 뒤 데이터 유효성 검사 → 범위에서 목록 → `=Tickers`를 지정합니다.
-- 왼쪽 셀(`A1`)에는 `Selected Ticker`와 같이 라벨을 넣어줍니다.
-
-### 3.2 KPI 카드
-
-선택된 티커 셀 `$B$1`을 참조하는 `GOOGLEFINANCE` 수식을 활용합니다. 예시는 다음과 같습니다.
-
-| 지표               | 추천 셀 | 수식                                                |
-| ------------------ | ------- | --------------------------------------------------- |
-| Last Price         | `B3`    | `=IF($B$1="",,GOOGLEFINANCE($B$1,"price"))`         |
-| Daily Change %     | `B4`    | `=IF($B$1="",,GOOGLEFINANCE($B$1,"changepct")/100)` |
-| Distribution Yield | `B5`    | `=IF($B$1="",,GOOGLEFINANCE($B$1,"yield"))`         |
-| 52w High           | `B6`    | `=IF($B$1="",,GOOGLEFINANCE($B$1,"high52"))`        |
-
-카드 형태로 보이도록 테두리, 글꼴 굵게, 숫자 서식을 적용합니다. Google Finance는 최대 20분 지연될 수 있다는 안내 문구도 함께 적어두면 좋습니다.
-
-### 3.3 최신 배당 스냅샷
-
-- 티커 시트에서 가장 최근 배당을 불러오는 블록을 만듭니다(예: `E3`부터).
-
-```text
-=LET(
-  tab, INDIRECT($B$1&"!A:G"),
-  data, FILTER(tab, INDEX(tab,,2) <> ""),
-  latest, INDEX(data, ROWS(data), ),
-  {"Last Dividend Date","Amount","Running Total";
-   INDEX(latest,1), INDEX(latest,2), INDEX(latest,7)}
-)
+```bash
+cp backend/env.example backend/.env
+cp frontend/env.example frontend/.env
 ```
 
-- 출력 범위를 작은 표 형태로 꾸미면 가독성이 좋아집니다.
+### 백엔드 (`backend/.env`)
 
-### 3.4 월별 배당 합계
+- 필수: `FMP_API_KEY`
+- 선택: `YAHOO_COOKIE`, `YAHOO_CRUMB`, `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `ALERT_SENDER_EMAIL`, `ALLOWED_ORIGINS`
 
-전체 ETF의 배당을 월 단위로 합산해 대시보드 차트의 데이터 원본으로 사용합니다.
+### 프런트엔드 (`frontend/.env`)
 
-1. `Dashboard`에서 예: `A10` 셀에 다음 수식을 입력합니다.
-
-```text
-=LET(
-  inflow, {
-    FILTER({HOOY!F2:G, ARRAYFORMULA(IF(HOOY!B2:B="",,HOOY!B2:B)), ARRAYFORMULA(IF(HOOY!B2:B="",,"HOOY"))}, HOOY!B2:B<>"");
-    FILTER({NVDY!F2:G, ARRAYFORMULA(IF(NVDY!B2:B="",,NVDY!B2:B)), ARRAYFORMULA(IF(NVDY!B2:B="",,"NVDY"))}, NVDY!B2:B<>"");
-    FILTER({PLTY!F2:G, ARRAYFORMULA(IF(PLTY!B2:B="",,PLTY!B2:B)), ARRAYFORMULA(IF(PLTY!B2:B="",,"PLTY"))}, PLTY!B2:B<>"");
-    FILTER({WPAY!F2:G, ARRAYFORMULA(IF(WPAY!B2:B="",,WPAY!B2:B)), ARRAYFORMULA(IF(WPAY!B2:B="",,"WPAY"))}, WPAY!B2:B<>"")
-  },
-  QUERY(
-    inflow,
-    "select Col1, sum(Col3) where Col3 is not null group by Col1 label sum(Col3) 'Dividends'",
-    0
-  )
-)
-```
-
-이 수식은 `Month Key`와 `Dividends` 2열 표를 만듭니다. 원하면 `B`열 옆에 `Rolling 12M` 열을 추가해 누적 합계를 표시할 수 있습니다: `=ARRAYFORMULA(IF(B11:B="",,MMULT(--(ROW(B11:B)>=TRANSPOSE(ROW(B11:B))),B11:B)))`. 2. 선택한 티커만 월별로 보고 싶다면 예: `E10`에 다음 수식을 넣습니다.
-
-```text
-=LET(
-  tab, INDIRECT($B$1&"!F2:G"),
-  data, FILTER(tab, INDEX(tab,,2) <> ""),
-  QUERY(data, "select Col1, sum(Col2) where Col2 is not null group by Col1 label sum(Col2) 'Dividends'", 0)
-)
-```
-
-### 3.5 대시보드 차트
-
-- 월별 합계 표 범위(`A10:B`)를 선택합니다.
-- 삽입 → 차트 → 콤보 차트를 고릅니다.
-- 시리즈 구성:
-  - 막대 시리즈: 월별 배당 합계
-  - (선택) 선 시리즈: 12개월 이동합
-- X축을 `Month Key`로 지정하고 표시 형식은 `MMM YYYY`로 설정하면 읽기 쉽습니다.
+- `VITE_API_BASE_URL` (기본 `http://localhost:8000/api`)
 
 ---
 
-## 4. 부가 기능
+## 백엔드 실행
 
-- **이름 범위**: `SelectedTicker`, `TickerKPIs` 등 자주 참조하는 구역은 이름 범위로 관리하면 수식이 단순해집니다.
-- **새로고침 안내**: `Dashboard`에 `GOOGLEFINANCE` 지연(약 20분)과 수동 새로고침(`Cmd+R`/`Ctrl+R`) 방법을 적어두세요.
-- **수동 보정**: Google에서 제공하지 않는 배당은 각 티커 시트의 자동 영역 아래쪽에 직접 입력하고 `Notes` 열에 메모합니다.
-- **시트 보호**: 수식이 들어간 영역은 보호하고, 사용자가 입력해야 할 부분만 잠금 해제해 실수로 지우는 일을 줄입니다.
+Conda 환경 `crawling`을 사용합니다.
+
+```bash
+# 의존성 + 테스트 도구 설치
+conda run -n crawling pip install -r backend/requirements.txt pytest pytest-asyncio
+```
+
+### 개발 서버
+
+```bash
+cd backend
+conda run -n crawling uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Swagger 문서: <http://localhost:8000/docs>
+
+### 단위 테스트
+
+```bash
+cd /Users/1004230/_personal/ETF-dashboard
+conda run -n crawling pytest backend/tests
+```
 
 ---
 
-## 5. 다음 단계
+## 프런트엔드 실행
 
-- 다른 ETF를 추가하려면 티커 시트를 복제한 뒤 `GOOGLEFINANCE` 수식의 심볼만 바꾸면 됩니다.
-- 지표를 확장하고 싶다면 비용비율, 운용자산(AUM), NAV 등 추가 KPI 카드를 만들어 수동 입력하거나 외부 데이터로 채워보세요.
-- 배당 공시나 수익률 변동에 맞춰 알림을 받으려면 Apps Script나 이메일 자동화 기능을 연동해볼 수 있습니다.
+```bash
+cd frontend
+npm install
+npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+빌드 및 프리뷰
+
+```bash
+npm run build
+npm run preview
+```
+
+---
+
+## 주요 API
+
+| 메서드/경로                       | 설명                      | 비고                             |
+| --------------------------------- | ------------------------- | -------------------------------- |
+| `GET /api/etf/tickers`            | 지원 ETF 목록             | 정적 메타데이터                  |
+| `GET /api/etf/dashboard`          | KPI + 티커 메타 정보      | `symbols`, `min_yield` 쿼리 지원 |
+| `GET /api/etf/dividends/{symbol}` | 배당 히스토리 + 월별 합계 | 기간·금액 필터, `limit` 옵션     |
+| `GET /api/alerts`                 | 알림 규칙 목록            | `symbol`, `is_active` 필터       |
+| `POST /api/alerts`                | 알림 생성                 | 최소 하나의 임계값 필요          |
+| `PATCH /api/alerts/{id}`          | 알림 수정                 | 부분 업데이트                    |
+| `DELETE /api/alerts/{id}`         | 알림 삭제                 |                                  |
+| `POST /api/alerts/test`           | 테스트 이메일 발송        | SMTP 필수                        |
+
+백엔드는 FMP → Yahoo Finance 순으로 데이터를 조회하고, 두 곳 모두 실패하면 502 에러를 반환합니다.
+
+---
+
+## 알림 스케줄러 & 이메일
+
+- `AlertsScheduler`가 앱 시작 시 백그라운드 태스크로 실행
+- 기본 주기: 15분 (`ALERT_POLL_INTERVAL_SECONDS`)
+- 쿨다운: 기본 6시간 (`ALERT_COOLDOWN_SECONDS`) 또는 규칙별 `cooldown_minutes`
+- SMTP 설정이 없으면 알림을 건너뛰며 로그로 경고합니다.
+
+테스트 이메일을 보내려면 `/api/alerts/test` 엔드포인트를 사용하세요.
+
+---
+
+## Docker (선택 사항)
+
+### Docker Compose
+
+프로젝트 루트에 있는 `docker-compose.yml`을 사용하면 백엔드·프런트엔드를 동시에 실행할 수 있습니다.
+
+```bash
+docker compose up --build
+```
+
+- 백엔드: http://localhost:8000
+- 프런트엔드: http://localhost:5173
+
+### 개별 Docker 이미지
+
+```bash
+# 백엔드
+cd backend
+docker build -t etf-backend .
+docker run --env-file .env -p 8000:8000 etf-backend
+
+# 프런트엔드
+cd frontend
+docker build -t etf-frontend .
+docker run --env-file .env -p 5173:5173 etf-frontend
+```
+
+실서비스에서는 reverse proxy(Nginx 등)와 HTTPS 구성을 권장합니다.
+
+---
+
+## 개발 참고 사항
+
+- 최근 365일 배당 합계 ÷ 현재가로 12개월 롤링 배당수익률을 계산합니다.
+- 데이터는 메모리 캐시에 저장되며 TTL(`CACHE_TTL_SECONDS`)을 초과하면 재조회합니다.
+- Yahoo Finance crumb/cookie는 만료될 수 있으므로 주기적으로 갱신하십시오.
+- DB 기본값은 SQLite 파일입니다. 운영 환경에서는 PostgreSQL 등으로 교체하는 것을 추천합니다.
+
+---
+
+## 향후 확장 아이디어
+
+- Celery/Redis 기반 알림 파이프라인, Slack·Telegram 알림 연동
+- 사용자 인증 도입 후 맞춤형 티커/알림 보관
+- NAV, AUM, 옵션 프리미엄 등 추가 지표 수집
+- PDF/Excel 리포트 내보내기
+
+---
+
+## Google Sheet 템플릿 (보존용)
+
+초기 요구사항이었던 Google Sheet 버전도 `ETF-dashboard-template.xlsx`로 제공됩니다.  
+Google Sheets에 업로드하면 `GOOGLEFINANCE` 기반으로 배당 대시보드를 사용할 수 있습니다.
